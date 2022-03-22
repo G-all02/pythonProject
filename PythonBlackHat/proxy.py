@@ -123,3 +123,101 @@ def response_handler(buffer):
 # делать что угодно. Это может пригодиться к примеру, если вы обнаружили передачу учетных данных в открытом виде и
 # хотите попробовать повысить свои привелегии в ходе работы с приложением, передав ему admin вместо собственного имени.
 
+
+def proxy_handler(client_socket, remote_host, remote_port, receive_first):
+    remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    remote_socket.connect((remote_host, remote_port))  # 3.1
+
+    if receive_first:  # 3.2
+        remote_buffer = receive_from(remote_socket)
+        hexdump(remote_buffer)
+
+    remote_buffer = response_handler(remote_buffer)  # 3.3
+    if len(remote_buffer):
+        print("[<==] Sending %d bytes to localhost." % len(remote_buffer))
+        client_socket.send(remote_buffer)
+
+    while True:
+        local_buffer = receive_from(client_socket)
+        if len(local_buffer):
+            line = "[==>]Received %d bytes from localhost." % len(local_buffer)
+            print(line)
+            hexdump(local_buffer)
+
+            local_buffer = request_handler(local_buffer)
+            remote_socket.send(local_buffer)
+            print("[==>] Sent to remote.")
+
+        remote_buffer = receive_from(remote_socket)
+        if len(remote_buffer):
+            print("[<==] Received %d bytes from remote." % len(remote_buffer))
+            hexdump(remote_buffer)
+
+            remote_buffer = response_handler(remote_buffer)
+            client_socket.send(remote_buffer)
+            print("[<==] Sent to localhost.")
+
+        if not len(local_buffer) or not len(remote_buffer):  # 3.4
+            client_socket.close()
+            remote_socket.close()
+            print("[*] No more data. Closing connections.")
+            break
+
+
+# функция proxy_handler содержит основную логику нашего прокси сервера. Для начала мы подключаемся к удаленному
+# узлу 3.1. Затем убеждаемся в том, что не нужно инициировать соединение с удаленной стороной и запрашивать данные,
+# прежде чем
+def server_loop(local_host, local_port, remote_host, remote_port, receive_first):
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # 4.1
+    try:
+        server.bind((local_host, local_port))  # 4.2
+    except Exception as e:
+        print('problem on bind: %r' % e)
+
+        print("[!!] Failed to listen on %s:%d" % (local_host, local_port))
+        print("[!!] Check for other listening sockets or correct permissions.")
+        sys.exit(0)
+
+    print("[*] Listening on %s:%d" % (local_host, local_port))
+    server.listen(5)
+    while True:  # 4.3
+        client_socket, addr = server.accept()
+        # выводим информацию о локальном соединении
+        line = "> Received incoming connection from %s:%d" % (addr[0], addr[1])
+        print(line)
+        # создаем поток для взаимодействия с удаленным сервером
+        proxy_thread = threading.Thread(
+            target=proxy_handler,
+            args=(client_socket, remote_host, remote_port, receive_first))  # 4.4
+        proxy_thread.start()
+
+
+"""Функция server_loop создает сокет 4.1, привязывает его к локальному адресу и начинает прослушивать 4.2. В главном 
+цикле 4.3, когда приходит запрос на соединение, мы передаем его функции proxy_handler в новом потоке 4.4, которая 
+занимается отправкой и приемом битов на том или ином конце потока данных."""
+
+
+def main():
+    if len(sys.argv[1:]) != 5:
+        print("Usage: ./proxy.py [localhost] [localport]", end='')
+        print("[remotehost] [remoteport] [receive_first]")
+        print("Example: ./proxy.py 127.0.0.1 9000 10.12.131.1 9000 True")
+        sys.exit(0)
+    local_host = sys.argv[1]
+    local_port = int(sys.argv[2])
+    remote_host = sys.argv[3]
+    remote_port = int(sys.argv[4])
+
+    receive_first = sys.argv[5]
+
+    if "True" in receive_first:
+        receive_first = True
+    else:
+        receive_first = False
+
+    server_loop(local_host, local_port, remote_host, remote_port, receive_first)
+
+
+if __name__ == '__main__':
+    main()
